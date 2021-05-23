@@ -1,0 +1,1018 @@
+---
+title: "Practicum 2"
+author: "Amey Arya (arya.am@northeastern.edu) Sai Sankar Gochhayat (gochhayat.s@northeastern.edu) Santosh Reddy Talakanti (talakanti.s@northeastern.edu)"
+output: html_notebook
+---
+```{r}
+library(RSQLite)
+library(DBI)
+library(dplyr)
+```
+
+```{r}
+fpath = "/Users/am3y/Desktop/NEU/SP21/DBMS/Assignment/Practicums/P2/"
+dbfile = "practicum2.db"
+
+# if database file already exists, we connect to it, otherwise
+# we create a new database
+dbcon <- dbConnect(RSQLite::SQLite(), paste0(fpath,dbfile))
+```
+
+
+## Part 1 Load XML
+
+
+![ERD Diagram Part 1](erdA.PNG)
+
+Article Table 
+```{sql connection=dbcon}
+CREATE TABLE IF NOT EXISTS Article (
+  ArticleID INTEGER PRIMARY KEY, 
+  ArticleTitle TEXT NOT NULL,
+  JournalID INTEGER NOT NULL,
+  FOREIGN KEY ("JournalID") references Journal("JournalID")
+); 
+```
+
+Journal Table
+```{sql connection=dbcon}
+CREATE TABLE IF NOT EXISTS Journal (
+  JournalID INTEGER PRIMARY KEY, 
+  JournalTitle TEXT NOT NULL,
+  ISSN_Number TEXT NOT NULL,
+  ISSN_Type TEXT NOT NULL,
+  Volume INTEGER NOT NULL,
+  Issue INTEGER NOT NULL,
+  PubDate TEXT NOT NULL
+); 
+```
+
+Author Table
+```{sql connection=dbcon}
+CREATE TABLE IF NOT EXISTS Author (
+  AuthorID INTEGER PRIMARY KEY, 
+  LastName TEXT NOT NULL,
+  ForeName TEXT NOT NULL,
+  Initials TEXT NOT NULL,
+  Affiliations TEXT,
+  Valid INT NOT NULL,
+  ArticleID NUMERIC NOT NULL,
+  FOREIGN KEY ("ArticleID") references Article("ArticleID")
+); 
+```
+
+History Table
+```{sql connection=dbcon}
+CREATE TABLE IF NOT EXISTS History (
+  HistoryID INTEGER PRIMARY KEY, 
+  Year INTEGER NOT NULL,
+  Month INTEGER NOT NULL,
+  Day INTEGER NOT NULL, 
+  Hour INTEGER, 
+  Minute INTEGER, 
+  PubStatus TEXT NOT NULL,
+  ArticleID NUMERIC NOT NULL,
+  FOREIGN KEY ("ArticleID") references Article("ArticleID")
+); 
+```
+
+```{r}
+library(XML)
+
+path <- "/Users/am3y/Desktop/NEU/SP21/DBMS/Assignment/Practicums/P2/"
+fn <- "pubmed_sample.xml"
+fpn = paste0(path, fn)
+
+# load from local file
+df <- xmlToDataFrame(fpn)
+
+# head(df)
+
+# Reading the XML file and parse into DOM
+xmlDOM <- xmlParse(file = fpn)
+
+# get the root node of the DOM tree
+r <- xmlRoot(xmlDOM)
+
+# print(r)
+
+```
+
+```{r}
+print(xmlSize(r))
+```
+
+```{r}
+# get number of children of root
+numArt <- xmlSize(r)
+
+# create various data frames to hold data; initial values are just
+# to define data type and length and will be replaced; pre-allocation
+# is better for performance than dynamic allocation of memory
+Article_df <- data.frame (ArticleID = vector (mode = "integer", 
+                                     length = numArt),
+                         ArticleTitle = vector (mode = "character", 
+                                             length = numArt),
+                         JournalID = vector (mode = "integer", 
+                                           length = numArt),
+                         stringsAsFactors = F)
+
+# we actually do not know the number of items so we cannot
+# pre-allocate the memory
+Author_df <- data.frame (AuthorID = integer(),
+                        LastName = character(),
+                        ForeName = character(),
+                        Initials = character(),
+                        Affiliations = character(),
+                        Valid = integer(),
+                        ArticleID = integer(),
+                        stringsAsFactors = F)
+
+Journal_df <- data.frame (JournalID = integer(),
+                        JournalTitle = character(),
+                        ISSN_Number = character(),
+                        ISSN_Type = character(),
+                        Volume = integer(),
+                        Issue = integer(),
+                        PubDate = character(),
+                        stringsAsFactors = F)
+
+History_df <- data.frame (HistoryID = integer(),
+                        Year = integer(),
+                        Month = integer(),
+                        Day = integer(),
+                        Hour = integer(),
+                        Minute = integer(),
+                        PubStatus = character(),
+                        ArticleID = integer(),
+                        stringsAsFactors = F)
+
+```
+
+
+```{r}
+# takes in a history node and it adds to history df
+parseHistory <- function (aHistoryNode, ArticleID)
+{
+  numHistory <- xmlSize(aHistoryNode)
+  startId <- nrow(History_df)
+  for (i in 1:numHistory) {
+    Year <- as.numeric(xmlValue(aHistoryNode[[i]][[1]]))
+    Month <- as.numeric(xmlValue(aHistoryNode[[i]][[2]]))
+    Day <- as.numeric(xmlValue(aHistoryNode[[i]][[3]]))
+    Hour <- as.numeric(xmlValue(aHistoryNode[[i]][[4]]))
+    Minute <- as.numeric(xmlValue(aHistoryNode[[i]][[5]]))
+    PubStatus <- xmlAttrs(aHistoryNode[[i]])[[1]]
+    HistoryID = startId + i
+
+    History_df[nrow(History_df) + 1,] = list(HistoryID,Year,Month,Day,Hour,Minute,PubStatus,ArticleID) 
+    
+  }
+  return(History_df)
+}
+```
+
+```{r}
+# takes in a journal node and it adds to journal df
+parseJournal <- function (aJournalNode)
+{
+  JournalID <- nrow(Journal_df) + 1
+  JournalTitle <- xmlValue(aJournalNode[[3]])
+  ISSN_Number <- xmlValue(aJournalNode[[1]])
+  ISSN_Type <- xmlAttrs(aJournalNode[[1]])[[1]]
+  Volume <- xmlValue(aJournalNode[[2]][[1]])
+  Issue <- xmlValue(aJournalNode[[2]][[2]])
+  PubDate <- xmlValue(aJournalNode[[2]][[3]])
+  Journal_df[nrow(Journal_df) + 1,] = list(JournalID,JournalTitle,ISSN_Number,ISSN_Type,Volume,Issue,PubDate)
+  return(Journal_df)
+}
+```
+
+
+```{r}
+# takes in a author node and it adds to author df
+parseAuthor <- function (aAuthorNode, ArticleID)
+{
+  numAuthor <- xmlSize(aAuthorNode)
+  startId <- nrow(Author_df)
+  for (i in 1:numAuthor) {
+      AuthorID = startId + i
+      LastName <- xmlValue(aAuthorNode[[i]][["LastName"]])
+      Forename <- xmlValue(aAuthorNode[[i]][["ForeName"]])
+      Initials <- xmlValue(aAuthorNode[[i]][["Initials"]])
+      Affiliation <- xmlValue(aAuthorNode[[i]][["Affiliation"]])
+      Valid <- xmlAttrs(aAuthorNode[[i]])
+      Author_df[nrow(Author_df) + 1,] = list(AuthorID, LastName,Forename,Initials,Affiliation,Valid,ArticleID)
+  }
+  return(Author_df)
+}
+```
+
+
+```{r}
+for (i in 1:numArt)
+{
+  aPubMedArticle <- r[i]
+  aArticle <- aPubMedArticle[[1]][["MedlineCitation"]][["Article"]]
+  ArticleTitle <- xmlValue(aArticle[["ArticleTitle"]])
+  
+  aJournal <- aArticle[["Journal"]]
+  aAuthorList <- aArticle[["AuthorList"]]
+  aHistory <- aPubMedArticle[[1]][[2]][[1]]
+  
+  ArticleID <- i
+    
+  # processing history nodes
+  History_df <- parseHistory(aHistory,ArticleID)
+  
+  Journal_df <- parseJournal(aJournal)
+  JournalID <- nrow(Journal_df)
+  
+  Author_df <- parseAuthor(aAuthorList, ArticleID)
+  Article_df[i,] = list(ArticleID, ArticleTitle, JournalID)
+}
+```
+
+
+```{r}
+# Article_df <- Article_df[0,]
+Article_df
+```
+
+This block populates the db tables with the contents of the database. 
+```{r}
+dbWriteTable(dbcon,"History",History_df, append=TRUE, row.names=FALSE)
+dbWriteTable(dbcon,"Journal",Journal_df, append=TRUE, row.names=FALSE)
+dbWriteTable(dbcon,"Author",Author_df, append=TRUE, row.names=FALSE)
+dbWriteTable(dbcon,"Article",Article_df, append=TRUE, row.names=FALSE)
+```
+
+Verifying data by checking one of the table.
+```{sql connection=dbcon}
+select * from Article
+```
+
+
+
+## Part 2 Create Star/Snowflake Schema
+
+Create and populate a star schema with dimension and transaction fact tables. Each row in the fact table will represent one article. Include the image of an updated ERD that contains the fact table and any additional required dimension tables. Populate the star schema in R. When building the schema, look a head to Part 3 as the schema is dependent on the eventual OLAP queries.
+
+![ERD Diagram Part 2 - A](erdB.png)
+
+
+
+```{r}
+fpath = "/Users/am3y/Desktop/NEU/SP21/DBMS/Assignment/Practicums/P2/"
+dbfile = "practicum2-B.db"
+
+# if database file already exists, we connect to it, otherwise
+# we create a new database
+dbcon2 <- dbConnect(RSQLite::SQLite(), paste0(fpath,dbfile))
+```
+
+
+Article Table 
+```{sql connection=dbcon2}
+CREATE TABLE IF NOT EXISTS Article (
+  ArticleID INTEGER PRIMARY KEY, 
+  ArticleTitle TEXT NOT NULL,
+  JournalID INTEGER NOT NULL,
+  AuthorID INTEGER NOT NULL,
+  DateID INTEGER NOT NULL,
+  HistoryID INTEGER NOT NULL,
+  GrantID INTEGER,
+  FOREIGN KEY ("JournalID") references Journal("JournalID"),
+  FOREIGN KEY ("DateID") references Date("DateID"),
+  FOREIGN KEY ("HistoryID") references HistoryMap("HistoryMapID"),
+  FOREIGN KEY ("AuthorID") references AuthorMap("AuthorMapID"),
+  FOREIGN KEY ("GrantID") references GrantMap("GrantMapID"),
+  FOREIGN KEY ("DateID") references Date("DateID")
+); 
+```
+
+AuthorMap Table
+```{sql connection=dbcon2}
+CREATE TABLE IF NOT EXISTS AuthorMap (
+  AuthorMapID INTEGER PRIMARY KEY
+); 
+```
+
+HistoryMap Table
+```{sql connection=dbcon2}
+CREATE TABLE IF NOT EXISTS HistoryMap (
+  HistoryMapID INTEGER PRIMARY KEY
+); 
+```
+
+GrantMap Table
+```{sql connection=dbcon2}
+CREATE TABLE IF NOT EXISTS GrantMap (
+  GrantMapID INTEGER PRIMARY KEY
+); 
+```
+
+
+Journal Table
+```{sql connection=dbcon2}
+CREATE TABLE IF NOT EXISTS Journal (
+  JournalID INTEGER PRIMARY KEY, 
+  JournalTitle TEXT NOT NULL,
+  ISSN_Number TEXT NOT NULL,
+  ISSN_Type TEXT NOT NULL,
+  Volume INTEGER NOT NULL,
+  Issue INTEGER NOT NULL,
+  PubDate TEXT NOT NULL
+); 
+```
+
+Author Table
+```{sql connection=dbcon2}
+CREATE TABLE IF NOT EXISTS Author (
+  AuthorID INTEGER PRIMARY KEY, 
+  LastName TEXT NOT NULL,
+  ForeName TEXT NOT NULL,
+  Initials TEXT NOT NULL,
+  Affiliations TEXT,
+  Valid INT NOT NULL,
+  AuthorMapID NUMERIC NOT NULL,
+  FOREIGN KEY ("AuthorMapID") references AuthorMap("AuthorMapID")
+); 
+```
+
+History Table
+```{sql connection=dbcon2}
+CREATE TABLE IF NOT EXISTS History (
+  HistoryID INTEGER PRIMARY KEY, 
+  Year INTEGER NOT NULL,
+  Month INTEGER NOT NULL,
+  Day INTEGER NOT NULL, 
+  Hour INTEGER, 
+  Minute INTEGER, 
+  PubStatus TEXT NOT NULL,
+  HistoryMapID NUMERIC NOT NULL,
+  FOREIGN KEY ("HistoryMapID") references Article("HistoryMapID")
+); 
+```
+
+Grant Table
+```{sql connection=dbcon2}
+CREATE TABLE IF NOT EXISTS Grant (
+  GrantIndexID INTEGER PRIMARY KEY, 
+  GrantID TEXT NOT NULL,
+  Acronym TEXT,
+  Agency TEXT NOT NULL,
+  Country TEXT NOT NULL, 
+  GrantMapID INTEGER, 
+  FOREIGN KEY ("GrantMapID") references GrantMap("GrantMapID")
+); 
+```
+
+Date Table
+```{sql connection=dbcon2}
+CREATE TABLE IF NOT EXISTS Date (
+  DateID INTEGER PRIMARY KEY, 
+  DateCreated TEXT NOT NULL,
+  DateCompleted TEXT NOT NULL,
+  DateRevised TEXT NOT NULL
+); 
+```
+
+Create the dataframes to write into the database. 
+```{r}
+# get number of children of root
+numArt <- xmlSize(r)
+
+# create various data frames to hold data; initial values are just
+# to define data type and length and will be replaced; pre-allocation
+# is better for performance than dynamic allocation of memory
+Article_df2 <- data.frame (ArticleID = integer(),
+                         ArticleTitle = character(),
+                         JournalID = integer(),
+                         AuthorID = integer(),
+                         HistoryID = integer(),
+                         GrantID = integer(),
+                         DateID = integer(),
+                         stringsAsFactors = F)
+
+# we actually do not know the number of items so we cannot
+# pre-allocate the memory
+Author_df2 <- data.frame (AuthorID = integer(),
+                        LastName = character(),
+                        ForeName = character(),
+                        Initials = character(),
+                        Affiliations = character(),
+                        Valid = integer(),
+                        AuthorMapID = integer(),
+                        stringsAsFactors = F)
+
+Journal_df2 <- data.frame (JournalID = integer(),
+                        JournalTitle = character(),
+                        ISSN_Number = character(),
+                        ISSN_Type = character(),
+                        Volume = integer(),
+                        Issue = integer(),
+                        PubDate = character(),
+                        stringsAsFactors = F)
+
+Date_df2 <- data.frame (DateID = integer(),
+                        DateCreated = character(),
+                        DateCompleted = character(),
+                        DateRevised = character(),
+                        stringsAsFactors = F)
+
+History_df2 <- data.frame (HistoryID = integer(),
+                        Year = integer(),
+                        Month = integer(),
+                        Day = integer(),
+                        Hour = integer(),
+                        Minute = integer(),
+                        PubStatus = character(),
+                        HistoryMapID = integer(),
+                        stringsAsFactors = F)
+
+Grant_df2 <- data.frame (GrantIndexID = integer(),
+                        GrantID = character(),
+                        Acronym = character(),
+                        Agency = character(),
+                        Country = character(),
+                        GrantMapID = integer(),
+                        stringsAsFactors = F)
+
+
+History_Map_df2 <- data.frame (HistoryMapID = integer(),
+                               stringsAsFactors = F)
+
+Author_Map_df2 <- data.frame (AuthorMapID = integer(),
+                               stringsAsFactors = F)
+
+Grant_Map_df2 <- data.frame (GrantMapID = integer(),
+                               stringsAsFactors = F)
+```
+
+
+```{r}
+# takes in a history node and it adds to history df
+parseHistory2 <- function (aHistoryNode, ArticleID)
+{
+  numHistory <- xmlSize(aHistoryNode)
+  startId <- nrow(History_df2)
+  for (i in 1:numHistory) {
+    Year <- as.numeric(xmlValue(aHistoryNode[[i]][[1]]))
+    Month <- as.numeric(xmlValue(aHistoryNode[[i]][[2]]))
+    Day <- as.numeric(xmlValue(aHistoryNode[[i]][[3]]))
+    Hour <- as.numeric(xmlValue(aHistoryNode[[i]][[4]]))
+    Minute <- as.numeric(xmlValue(aHistoryNode[[i]][[5]]))
+    PubStatus <- xmlAttrs(aHistoryNode[[i]])[[1]]
+    HistoryID = startId + i
+
+    History_df2[nrow(History_df2) + 1,] = list(HistoryID,Year,Month,Day,Hour,Minute,PubStatus,ArticleID) 
+    
+  }
+  return(History_df2)
+}
+```
+
+```{r}
+monthMap = list("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")  
+```
+
+
+
+```{r}
+# takes in a journal node and it adds to journal df
+parseJournal2 <- function (aJournalNode)
+{
+  JournalID <- nrow(Journal_df2) + 1
+  JournalTitle <- xmlValue(aJournalNode[[3]])
+  ISSN_Number <- xmlValue(aJournalNode[[1]])
+  ISSN_Type <- xmlAttrs(aJournalNode[[1]])[[1]]
+  Volume <- xmlValue(aJournalNode[[2]][[1]])
+  Issue <- xmlValue(aJournalNode[[2]][[2]])
+  PubDate <- xmlValue(aJournalNode[[2]][[3]])
+  Journal_df2[nrow(Journal_df2) + 1,] = list(JournalID,JournalTitle,ISSN_Number,ISSN_Type,Volume,Issue,PubDate)
+  return(Journal_df2)
+}
+```
+
+
+```{r}
+# takes in a author node and it adds to author df
+parseAuthor2 <- function (aAuthorNode, ArticleID)
+{
+  numAuthor <- xmlSize(aAuthorNode)
+  startId <- nrow(Author_df2)
+  for (i in 1:numAuthor) {
+      AuthorID = startId + i
+      LastName <- xmlValue(aAuthorNode[[i]][["LastName"]])
+      Forename <- xmlValue(aAuthorNode[[i]][["ForeName"]])
+      Initials <- xmlValue(aAuthorNode[[i]][["Initials"]])
+      Affiliation <- xmlValue(aAuthorNode[[i]][["Affiliation"]])
+      Valid <- xmlAttrs(aAuthorNode[[i]])
+      Author_df2[nrow(Author_df2) + 1,] = list(AuthorID, LastName,Forename,Initials,Affiliation,Valid,ArticleID)
+  }
+  return(Author_df2)
+}
+```
+
+Parse Date Function 
+```{r}
+# takes in a date node and it adds to date df
+parseDate2 <- function (aDateNode)
+{
+
+  DateID <- nrow(Date_df2) + 1
+
+  DateCreated_month <- xmlValue(aDateNode[["DateCreated"]][["Month"]])
+  DataCreated_year <- xmlValue(aDateNode[["DateCreated"]][["Year"]])
+  DataCreated_day <- xmlValue(aDateNode[["DateCreated"]][["Day"]])
+
+  DataCreated <- paste(DateCreated_month, DataCreated_year, DataCreated_day, sep="-")
+
+  DateCompleted_month <- xmlValue(aDateNode[["DateCompleted"]][["Month"]])
+  DataCompleted_year <- xmlValue(aDateNode[["DateCompleted"]][["Year"]])
+  DataCompleted_day <- xmlValue(aDateNode[["DateCompleted"]][["Day"]])
+
+  DataCompleted <- paste(DateCompleted_month, DataCompleted_year, DataCompleted_day, sep="-")
+
+  DateRevised_month <- xmlValue(aDateNode[["DateRevised"]][["Month"]])
+  DataRevised_year <- xmlValue(aDateNode[["DateRevised"]][["Year"]])
+  DataRevised_day <- xmlValue(aDateNode[["DateRevised"]][["Day"]])
+
+  DataRevised <- paste(DateRevised_month, DataRevised_year, DataRevised_day, sep="-")
+
+  Date_df2[nrow(Date_df2) + 1,] = list(DateID,DataCreated, DataCompleted, DataRevised)
+
+  return(Date_df2)
+}
+```
+
+Grant Function 
+```{r}
+# takes in a grant list and it adds to grant df
+parseGrant2 <- function (aGrantList,GrantMapID)
+{
+numGrant <- xmlSize(aGrantList)
+GrantStartID <- nrow(Grant_df2) + 1
+for (i in 1:numGrant) {
+  GrantIndexID <- GrantStartID + i
+  GrantID <- xmlValue(aGrantList[[i]][["GrantID"]])
+  Acronym <- xmlValue(aGrantList[[i]][["Acronym"]])
+  Agency <- xmlValue(aGrantList[[i]][["Agency"]])
+  Country <- xmlValue(aGrantList[[i]][["Country"]])
+  Grant_df2[nrow(Grant_df2) + 1,] = list(GrantIndexID, GrantID,Acronym,Agency,Country,GrantMapID)
+  }
+return(Grant_df2)
+}
+```
+
+```{r}
+for (i in 1:numArt)
+{
+  aPubMedArticle <- r[i]
+  aArticle <- aPubMedArticle[[1]][["MedlineCitation"]][["Article"]]
+  ArticleTitle <- xmlValue(aArticle[["ArticleTitle"]])
+  
+  aJournal <- aArticle[["Journal"]]
+  aAuthorList <- aArticle[["AuthorList"]]
+  aHistory <- aPubMedArticle[[1]][[2]][[1]]
+  aDate <- aPubMedArticle[[1]][["MedlineCitation"]]
+  aGrantList <- aArticle[["GrantList"]]
+  
+  ArticleID <- i
+  
+  # Journal Nodes
+  Journal_df2 <- parseJournal2(aJournal)
+  JournalID <- nrow(Journal_df2)
+  
+  # Date Nodes
+  Date_df2 <- parseDate2(aDate)
+  DateID <- nrow(Date_df2)
+  
+  
+  # Processing history nodes
+  HistoryID <- nrow(History_Map_df2) + 1
+  History_Map_df2[HistoryID,] = list(ArticleID)
+  History_df2 <- parseHistory2(aHistory,HistoryID)
+  
+  # Author Nodes
+  AuthorID <- nrow(Author_Map_df2) + 1
+  Author_Map_df2[AuthorID,] = list(ArticleID)
+  Author_df2 <- parseAuthor2(aAuthorList, AuthorID)
+  
+  # Grant nodes
+  if (length(aGrantList)){
+      GrantID <- nrow(Grant_Map_df2) + 1
+      Grant_Map_df2[GrantID,] = list(ArticleID)
+      Grant_df2 <- parseGrant2(aGrantList, GrantID)
+  } else {
+      GrantID <- "NA"
+  }
+
+  Article_df2[nrow(Article_df2) + 1,] = list(ArticleID, ArticleTitle, JournalID, AuthorID, HistoryID, GrantID, DateID)
+}
+```
+
+
+```{r}
+Grant_df2
+```
+
+
+
+This block populates the db tables with the contents of the database. 
+```{r}
+dbWriteTable(dbcon2,"History",History_df2, append=TRUE, row.names=FALSE)
+dbWriteTable(dbcon2,"Journal",Journal_df2, append=TRUE, row.names=FALSE)
+dbWriteTable(dbcon2,"Author",Author_df2, append=TRUE, row.names=FALSE)
+dbWriteTable(dbcon2,"Article",Article_df2, append=TRUE, row.names=FALSE)
+```
+
+
+
+```{r}
+dbWriteTable(dbcon2,"Grant",Grant_df2, append=TRUE, row.names=FALSE)
+dbWriteTable(dbcon2,"Date",Date_df2, append=TRUE, row.names=FALSE)
+dbWriteTable(dbcon2,"GrantMap",Grant_Map_df2, append=TRUE, row.names=FALSE)
+dbWriteTable(dbcon2,"HistoryMap",History_Map_df2, append=TRUE, row.names=FALSE)
+dbWriteTable(dbcon2,"AuthorMap",Author_Map_df2, append=TRUE, row.names=FALSE)
+```
+
+
+```{sql connection=dbcon2}
+select * from Journal
+```
+
+
+
+
+In the same schema as the previous step, create and populate a summary fact table that represents number of articles per time period (quarter, year) by author and by journal. Include the image of an updated ERD that contains the fact table. Populate the fact table in R. When building the schema, look a head to Part 3 as the schema is dependent on the eventual OLAP queries.
+
+![ERD Diagram Part 2 - B](erdC.png)
+
+So we decided to add a QuarterSummary table that would help associate a particular 
+Article to a Quarter and hence linking all Journals, and Authors associated to a particular quarter. 
+We will be using the above df's and clearing out the table and df's to process the QuarterSummary Table  and new ArticleTable. 
+
+
+Lets clear out the tables and data to implement the new erd - 
+[6:24 PM] Santosh Reddy Talakanti
+    
+```{sql connection=dbcon2}
+DROP TABLE IF EXISTS Journal
+```
+```{sql connection=dbcon2}
+DROP TABLE IF EXISTS Article
+```
+
+```{sql connection=dbcon2}
+DELETE FROM Author;
+```
+ 
+```{sql connection=dbcon2}
+DELETE FROM History
+```
+ 
+```{sql connection=dbcon2}
+DELETE FROM Grant
+```
+ 
+```{sql connection=dbcon2}
+DELETE FROM Date
+```
+ 
+```{sql connection=dbcon2}
+DELETE FROM AuthorMap
+```
+ 
+```{sql connection=dbcon2}
+DELETE FROM HistoryMap
+```
+ 
+```{sql connection=dbcon2}
+DELETE FROM GrantMap
+```
+
+
+
+
+Create new df's for Article and Journal
+```{r}
+Article_df2 <- data.frame (ArticleID = integer(),
+                         ArticleTitle = character(),
+                         JournalID = integer(),
+                         AuthorID = integer(),
+                         HistoryID = integer(),
+                         GrantID = integer(),
+                         DateID = integer(),
+                         SummaryID = integer(),
+                         stringsAsFactors = F)
+                         
+Journal_df2 <- data.frame (JournalID = integer(),
+                        JournalTitle = character(),
+                        ISSN_Number = character(),
+                        ISSN_Type = character(),
+                        Volume = integer(),
+                        Issue = integer(),
+                        PubYear = character(),
+                        PubMonth = character(),
+                        stringsAsFactors = F)
+Author_df2 <- data.frame (AuthorID = integer(),
+                        LastName = character(),
+                        ForeName = character(),
+                        Initials = character(),
+                        Affiliations = character(),
+                        Valid = integer(),
+                        AuthorMapID = integer(),
+                        stringsAsFactors = F)
+
+Date_df2 <- data.frame (DateID = integer(),
+                        DateCreated = character(),
+                        DateCompleted = character(),
+                        DateRevised = character(),
+                        stringsAsFactors = F)
+
+History_df2 <- data.frame (HistoryID = integer(),
+                        Year = integer(),
+                        Month = integer(),
+                        Day = integer(),
+                        Hour = integer(),
+                        Minute = integer(),
+                        PubStatus = character(),
+                        HistoryMapID = integer(),
+                        stringsAsFactors = F)
+
+Grant_df2 <- data.frame (GrantIndexID = integer(),
+                        GrantID = character(),
+                        Acronym = character(),
+                        Agency = character(),
+                        Country = character(),
+                        GrantMapID = integer(),
+                        stringsAsFactors = F)
+
+
+History_Map_df2 <- data.frame (HistoryMapID = integer(),
+                               stringsAsFactors = F)
+
+Author_Map_df2 <- data.frame (AuthorMapID = integer(),
+                               stringsAsFactors = F)
+
+Grant_Map_df2 <- data.frame (GrantMapID = integer(),
+                               stringsAsFactors = F)
+```
+
+
+
+Article Table and Journal Table Recreated to support summary table
+```{sql connection=dbcon2}
+CREATE TABLE IF NOT EXISTS Article (
+  ArticleID INTEGER PRIMARY KEY, 
+  ArticleTitle TEXT NOT NULL,
+  JournalID INTEGER NOT NULL,
+  AuthorID INTEGER NOT NULL,
+  DateID INTEGER NOT NULL,
+  HistoryID INTEGER NOT NULL,
+  GrantID INTEGER,
+  SummaryID INTEGER,
+  FOREIGN KEY ("JournalID") references Journal("JournalID"),
+  FOREIGN KEY ("DateID") references Date("DateID"),
+  FOREIGN KEY ("HistoryID") references HistoryMap("HistoryMapID"),
+  FOREIGN KEY ("AuthorID") references AuthorMap("AuthorMapID"),
+  FOREIGN KEY ("GrantID") references GrantMap("GrantMapID"),
+  FOREIGN KEY ("DateID") references Date("DateID"),
+  FOREIGN KEY ("SummaryID") references QuarterSummary("SummaryID")
+); 
+```
+
+```{sql connection=dbcon2}
+CREATE TABLE IF NOT EXISTS Journal (
+  JournalID INTEGER PRIMARY KEY, 
+  JournalTitle TEXT NOT NULL,
+  ISSN_Number TEXT NOT NULL,
+  ISSN_Type TEXT NOT NULL,
+  Volume INTEGER NOT NULL,
+  Issue INTEGER NOT NULL,
+  PubYear INTEGER NOT NULL,
+  PubMonth INTEGER NOT NULL
+); 
+```
+
+```{sql connection=dbcon2}
+CREATE TABLE IF NOT EXISTS QuarterSummary (
+  Quarter INTEGER NOT NULL, 
+  Year INTEGER NOT NULL,
+  SummaryID INTEGER PRIMARY KEY
+); 
+```
+
+Process Journal Using Quarters - 
+```{r}
+mo2Num <- function(x) match(tolower(x), tolower(month.abb))
+```
+
+```{r}
+# takes in a journal node and it adds to journal df
+parseJournal3 <- function (aJournalNode)
+{
+  JournalID <- nrow(Journal_df2) + 1
+  JournalTitle <- xmlValue(aJournalNode[[3]])
+  ISSN_Number <- xmlValue(aJournalNode[[1]])
+  ISSN_Type <- xmlAttrs(aJournalNode[[1]])[[1]]
+  Volume <- xmlValue(aJournalNode[[2]][[1]])
+  Issue <- xmlValue(aJournalNode[[2]][[2]])
+  tag <- xmlName(aJournalNode[[2]][[3]][[1]])
+  if(tag == "MedlineDate"){
+    PubYear <- strsplit(xmlValue(aJournalNode[[2]][[3]][[1]])," ")[[1]][1]
+    PubMonth <- mo2Num(strsplit(strsplit(xmlValue(aJournalNode[[2]][[3]][[1]])," ")[[1]][2],"-")[[1]][1])
+  }else{
+    PubYear <- xmlValue(aJournalNode[[2]][[3]][[1]])
+    if (length(aJournalNode[[2]][[3]][[2]])){
+      PubMonth <- mo2Num(xmlValue(aJournalNode[[2]][[3]][[2]]))
+    } else {
+      PubMonth <- 1
+    }
+  }
+  Journal_df2[nrow(Journal_df2) + 1,] = list(JournalID,JournalTitle,ISSN_Number,ISSN_Type,Volume,Issue,PubYear,PubMonth)
+  return(Journal_df2)
+}
+```
+
+
+```{r}
+QuarterSummary_df <- data.frame (Quarter = integer(),
+Year = integer(),
+SummaryID = integer(),
+stringsAsFactors = F)
+```
+
+```{r}
+QuarterSummary_df[nrow(QuarterSummary_df) + 1,] = list(1,2012,1)
+QuarterSummary_df[nrow(QuarterSummary_df) + 1,] = list(2,2012,2)
+QuarterSummary_df[nrow(QuarterSummary_df) + 1,] = list(3,2012,3)
+QuarterSummary_df[nrow(QuarterSummary_df) + 1,] = list(4,2012,4)
+QuarterSummary_df[nrow(QuarterSummary_df) + 1,] = list(1,2013,5)
+QuarterSummary_df[nrow(QuarterSummary_df) + 1,] = list(2,2013,6)
+QuarterSummary_df[nrow(QuarterSummary_df) + 1,] = list(3,2013,7)
+QuarterSummary_df[nrow(QuarterSummary_df) + 1,] = list(4,2013,8)
+QuarterSummary_df[nrow(QuarterSummary_df) + 1,] = list(1,2014,9)
+QuarterSummary_df[nrow(QuarterSummary_df) + 1,] = list(2,2014,10)
+QuarterSummary_df[nrow(QuarterSummary_df) + 1,] = list(3,2014,11)
+QuarterSummary_df[nrow(QuarterSummary_df) + 1,] = list(4,2014,12)
+```
+
+```{r}
+History_Map_df2
+```
+
+```{r}
+for (i in 1:numArt)
+{
+  aPubMedArticle <- r[i]
+  aArticle <- aPubMedArticle[[1]][["MedlineCitation"]][["Article"]]
+  ArticleTitle <- xmlValue(aArticle[["ArticleTitle"]])
+  
+  aJournal <- aArticle[["Journal"]]
+  aAuthorList <- aArticle[["AuthorList"]]
+  aHistory <- aPubMedArticle[[1]][[2]][[1]]
+  aDate <- aPubMedArticle[[1]][["MedlineCitation"]]
+  aGrantList <- aArticle[["GrantList"]]
+  
+  ArticleID <- i
+  
+  # Journal Nodes
+  Journal_df2 <- parseJournal3(aJournal)
+  JournalID <- nrow(Journal_df2)
+  
+  PubYear <- Journal_df2[JournalID,7]
+  PubQuarter<- ceiling(as.numeric(Journal_df2[JournalID,8]) / 3)
+  
+  indices <- which(QuarterSummary_df$Year == PubYear & QuarterSummary_df$Quarter == PubQuarter)
+  
+  SummaryID <- QuarterSummary_df[indices,3]
+
+  # Date Nodes
+  Date_df2 <- parseDate2(aDate)
+  DateID <- nrow(Date_df2)
+  
+  
+  # Processing history nodes
+  HistoryID <- nrow(History_Map_df2) + 1
+  History_Map_df2[HistoryID,] = list(ArticleID)
+  History_df2 <- parseHistory2(aHistory,HistoryID)
+  
+  # Author Nodes
+  AuthorID <- nrow(Author_Map_df2) + 1
+  Author_Map_df2[AuthorID,] = list(ArticleID)
+  Author_df2 <- parseAuthor2(aAuthorList, AuthorID)
+  
+  # Grant nodes
+  if (length(aGrantList)){
+      GrantID <- nrow(Grant_Map_df2) + 1
+      Grant_Map_df2[GrantID,] = list(ArticleID)
+      Grant_df2 <- parseGrant2(aGrantList, GrantID)
+  } else {
+      GrantID <- "NA"
+  }
+
+  Article_df2[nrow(Article_df2) + 1,] = list(ArticleID, ArticleTitle, JournalID, AuthorID, HistoryID, GrantID, DateID, SummaryID)
+}
+```
+
+
+```{r}
+Grant_Map_df2
+```
+This block populates the db tables with the contents of the database. 
+```{r}
+dbWriteTable(dbcon2,"History",History_df2, append=TRUE, row.names=FALSE)
+dbWriteTable(dbcon2,"Journal",Journal_df2, append=TRUE, row.names=FALSE)
+dbWriteTable(dbcon2,"Author",Author_df2, append=TRUE, row.names=FALSE)
+dbWriteTable(dbcon2,"Article",Article_df2, append=TRUE, row.names=FALSE)
+```
+
+
+
+```{r}
+dbWriteTable(dbcon2,"Grant",Grant_df2, append=TRUE, row.names=FALSE)
+dbWriteTable(dbcon2,"Date",Date_df2, append=TRUE, row.names=FALSE)
+dbWriteTable(dbcon2,"GrantMap",Grant_Map_df2, append=TRUE, row.names=FALSE)
+dbWriteTable(dbcon2,"HistoryMap",History_Map_df2, append=TRUE, row.names=FALSE)
+dbWriteTable(dbcon2,"AuthorMap",Author_Map_df2, append=TRUE, row.names=FALSE)
+dbWriteTable(dbcon2, "QuarterSummary", QuarterSummary_df, append=TRUE, names=FALSE)
+```
+
+```{sql connection=dbcon2}
+select * from Article
+```
+
+Finally using the summary table find the required answers - 
+
+Number of articles per time period (quarter, year) by Author -
+```{sql connection=dbcon2}
+SELECT at.ForeName || " " || at.LastName AS Name,  q.Quarter, q.Year, COUNT(a.ArticleID) AS NumberofArticles 
+FROM Article a
+INNER JOIN AuthorMap atm
+ON a.AuthorID = atm.AuthorMapID
+INNER JOIN Author at
+ON atm.AuthorMapID = at.AuthorMapID
+INNER JOIN QuarterSummary q
+ON a.SummaryID = q.SummaryID
+GROUP BY at.ForeName, at.LastName , q.Quarter, q.Year
+```
+
+Number of articles per time period (quarter, year) by Journal -
+```{sql connection=dbcon2}
+SELECT j.JournalTitle,  q.Quarter, q.Year, COUNT(a.ArticleID) AS NumberofArticles 
+FROM Article a
+INNER JOIN Journal j
+ON a.JournalID = j.JournalID
+INNER JOIN QuarterSummary q
+ON a.SummaryID = q.SummaryID
+GROUP BY j.JournalTitle , q.Quarter, q.Year
+```
+
+
+## Part 3 Explore and Mine Data
+
+1. Write queries using your data warehouse to explore whether the publications show a seasonal pattern. Look beyond the pattern of number of publications per season. Adjust your fact tables as needed to support your new queries. If you need to update the fact table, document your changes and your reasons why the changes are needed.
+
+
+We want to figure out how many grants were given out per quarter, and see if there is a trend in that
+```{sql connection=dbcon2}
+SELECT q.Year || "-" || q.Quarter as QuarterYear, COUNT(g.GrantID) AS NumberofGrants
+FROM Article a
+INNER JOIN GrantMap gm
+ON a.GrantID = gm.GrantMapID
+INNER JOIN Grant g
+ON gm.GrantMapID = g.GrantMapID
+INNER JOIN QuarterSummary q
+ON a.SummaryID = q.SummaryID
+GROUP BY q.Quarter, q.Year
+ORDER BY q.Year, q.Quarter
+```
+So we noticed that, in the half of 2012 a total of 22 grants were allocated whereas in the second half of 2012, only 12 grants were allocated.
+From the limited data points we had, we can decipher majority of grants are allocated in the first half of the year. There is very limited data from 2013 to draw any insights.
+Our original summary table supported extracting this information so we didn't need to update our summary fact table schema.
+
+2. Either (a) visualize (graph/plot) the data from the previous step using R to explore seasonality and explain what you found.
+
+
+```{r warning=FALSE}
+str = "SELECT q.Quarter, q.Year, COUNT(g.GrantID) AS NumberofGrants
+FROM Article a
+INNER JOIN GrantMap gm
+ON a.GrantID = gm.GrantMapID
+INNER JOIN Grant g
+ON gm.GrantMapID = g.GrantMapID
+INNER JOIN QuarterSummary q
+ON a.SummaryID = q.SummaryID
+GROUP BY q.Quarter, q.Year
+ORDER BY q.Year, q.Quarter;"
+
+query <- dbSendQuery(dbcon2, str)
+dfplot <- fetch(query,n = -1)
+dfplot$QuarterYear <- paste(dfplot$Year, "-", dfplot$Quarter)
+dfplot$QuarterYear = as.factor(dfplot$QuarterYear)
+plot.default(x = dfplot$QuarterYear, y = dfplot$NumberofGrants,ylim=c(0,20), xlab="Quarter Year", ylab="Number of Grants",type = "o")
+lines(dfplot$QuarterYear, dfplot$NumberofGrants, col = "red")
+```
